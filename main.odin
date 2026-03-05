@@ -28,8 +28,9 @@ BLOCK_SIZE   :: vec2{36.0, 14.0}
 BLOCK_GAP    :: vec2{3.0, 5.0}
 BLOCK_AREA_Y :: 40.0
 
-GAME_NAME  :: "gai"
-TEXT_SCALE :: f32(3)
+GAME_NAME      :: "gai"
+TEXT_SCALE     :: f32(3)
+STARTING_LIVES :: 3
 
 VERT_SRC :: `#version 330 core
 layout(location = 0) in vec2 a_offset;
@@ -43,9 +44,10 @@ void main() {
 }`
 
 FRAG_SRC :: `#version 330 core
+uniform vec4 u_color;
 out vec4 frag_color;
 void main() {
-    frag_color = vec4(1.0, 1.0, 1.0, 1.0);
+    frag_color = u_color;
 }`
 
 generate_circle_offsets :: proc() -> [VERTEX_COUNT]vec2 {
@@ -286,6 +288,55 @@ main :: proc() {
 	GL.EnableVertexAttribArray(0)
 	GL.BindVertexArray(0)
 
+	lives_vao, lives_vbo: u32
+	GL.GenVertexArrays(1, &lives_vao)
+	GL.GenBuffers(1, &lives_vbo)
+	defer GL.DeleteVertexArrays(1, &lives_vao)
+	defer GL.DeleteBuffers(1, &lives_vbo)
+
+	GL.BindVertexArray(lives_vao)
+	GL.BindBuffer(GL.ARRAY_BUFFER, lives_vbo)
+	GL.BufferData(GL.ARRAY_BUFFER, 256 * 6 * size_of(vec2), nil, GL.DYNAMIC_DRAW)
+	GL.VertexAttribPointer(0, 2, GL.FLOAT, false, size_of(vec2), 0)
+	GL.EnableVertexAttribArray(0)
+	GL.BindVertexArray(0)
+
+	dim_vao, dim_vbo: u32
+	GL.GenVertexArrays(1, &dim_vao)
+	GL.GenBuffers(1, &dim_vbo)
+	defer GL.DeleteVertexArrays(1, &dim_vao)
+	defer GL.DeleteBuffers(1, &dim_vbo)
+	{
+		dim_verts := [4]vec2{{0, 0}, {WINDOW_WIDTH, 0}, {0, WINDOW_HEIGHT}, {WINDOW_WIDTH, WINDOW_HEIGHT}}
+		GL.BindVertexArray(dim_vao)
+		GL.BindBuffer(GL.ARRAY_BUFFER, dim_vbo)
+		GL.BufferData(GL.ARRAY_BUFFER, size_of(dim_verts), &dim_verts, GL.STATIC_DRAW)
+		GL.VertexAttribPointer(0, 2, GL.FLOAT, false, size_of(vec2), 0)
+		GL.EnableVertexAttribArray(0)
+		GL.BindVertexArray(0)
+	}
+
+	paused_vao, paused_vbo: u32
+	GL.GenVertexArrays(1, &paused_vao)
+	GL.GenBuffers(1, &paused_vbo)
+	defer GL.DeleteVertexArrays(1, &paused_vao)
+	defer GL.DeleteBuffers(1, &paused_vbo)
+
+	paused_vert_count: int
+	{
+		paused_text := "PAUSED"
+		paused_w    := f32(ef.width(paused_text)) * TEXT_SCALE
+		paused_pos  := vec2{(f32(WINDOW_WIDTH) - paused_w) / 2, (f32(WINDOW_HEIGHT) - 8 * TEXT_SCALE) / 2}
+
+		GL.BindVertexArray(paused_vao)
+		GL.BindBuffer(GL.ARRAY_BUFFER, paused_vbo)
+		GL.VertexAttribPointer(0, 2, GL.FLOAT, false, size_of(vec2), 0)
+		GL.EnableVertexAttribArray(0)
+		GL.BindVertexArray(0)
+
+		paused_vert_count = quads_to_vbo(paused_vbo, paused_text, paused_pos, TEXT_SCALE, GL.STATIC_DRAW)
+	}
+
 	text_vert_count: int
 	{
 		text_w    := f32(ef.width(GAME_NAME)) * TEXT_SCALE
@@ -314,26 +365,35 @@ main :: proc() {
 		GL.BindVertexArray(0)
 	}
 
+	GL.Enable(GL.BLEND)
+	GL.BlendFunc(GL.SRC_ALPHA, GL.ONE_MINUS_SRC_ALPHA)
+
 	GL.UseProgram(program)
 	loc_center     := GL.GetUniformLocation(program, "u_center")
 	loc_resolution := GL.GetUniformLocation(program, "u_resolution")
+	loc_color      := GL.GetUniformLocation(program, "u_color")
 	GL.Uniform2f(loc_resolution, f32(WINDOW_SIZE.x), f32(WINDOW_SIZE.y))
+	GL.Uniform4f(loc_color, 1, 1, 1, 1)
 
 	ball_pos   := vec2{WINDOW_WIDTH / 2.0, WINDOW_HEIGHT / 2.0}
 	ball_vel   := BALL_SPEED
 	paddle_pos := vec2{f32(WINDOW_WIDTH) / 2.0, PADDLE_Y}
 	left_held, right_held := false, false
 
-	blocks: [BLOCK_COLS * BLOCK_ROWS]bool
-	for &b in blocks { b = true }
-	block_vert_count := rebuild_block_vbo(block_vbo, &blocks)
+	state := State{lives = STARTING_LIVES}
+	for &b in state.blocks { b = true }
+	block_vert_count := rebuild_block_vbo(block_vbo, &state.blocks)
 
-	score            := 0
 	score_dirty      := true
 	score_vert_count := 0
 
+	lives_dirty      := true
+	lives_vert_count := 0
+
 	prev_counter := SDL.GetPerformanceCounter()
 	freq         := SDL.GetPerformanceFrequency()
+
+	paused := false
 
 	screenshot_counter := 0
 	should_screenshot  := false
@@ -353,6 +413,7 @@ main :: proc() {
 			case .KEY_DOWN:
 			#partial switch event.key.scancode {
 			case .ESCAPE:      running = false
+			case .PAUSE, .P:   paused = !paused
 			case .PRINTSCREEN: should_screenshot = true
 			case .LEFT:        left_held  = true
 			case .RIGHT:       right_held = true
@@ -375,6 +436,8 @@ main :: proc() {
 			}
 		}
 
+		if !paused {
+
 		if left_held  { paddle_pos.x -= PADDLE_SPEED * dt }
 		if right_held { paddle_pos.x += PADDLE_SPEED * dt }
 		paddle_pos.x = clamp(paddle_pos.x, PADDLE_SIZE.x / 2, f32(WINDOW_WIDTH) - PADDLE_SIZE.x / 2)
@@ -385,14 +448,14 @@ main :: proc() {
 		block_loop: for row in 0..<BLOCK_ROWS {
 			for col in 0..<BLOCK_COLS {
 				idx := row * BLOCK_COLS + col
-				if !blocks[idx] { continue }
+				if !state.blocks[idx] { continue }
 				r := block_rect(col, row)
 				closest := clamp2(ball_pos, r.min, r.max)
 				d := ball_pos - closest
 				if glsl.dot(d, d) < BALL_RADIUS * BALL_RADIUS {
-					blocks[idx] = false
-					block_vert_count = rebuild_block_vbo(block_vbo, &blocks)
-					score += 100
+					state.blocks[idx] = false
+					block_vert_count = rebuild_block_vbo(block_vbo, &state.blocks)
+					state.score += 100
 					score_dirty = true
 					if ball_pos.x >= r.min.x && ball_pos.x <= r.max.x {
 						ball_vel.y = -ball_vel.y
@@ -416,10 +479,21 @@ main :: proc() {
 			ball_vel.y = -abs(ball_vel.y)
 		}
 
-		if ball_pos.x - BALL_RADIUS < 0             { ball_pos.x = BALL_RADIUS;                ball_vel.x =  abs(ball_vel.x) }
-		if ball_pos.x + BALL_RADIUS > WINDOW_WIDTH  { ball_pos.x = WINDOW_WIDTH - BALL_RADIUS; ball_vel.x = -abs(ball_vel.x) }
-		if ball_pos.y - BALL_RADIUS < 0             { ball_pos.y = BALL_RADIUS;                ball_vel.y =  abs(ball_vel.y) }
-		if ball_pos.y + BALL_RADIUS > WINDOW_HEIGHT { ball_pos.y = WINDOW_HEIGHT - BALL_RADIUS; ball_vel.y = -abs(ball_vel.y) }
+		if ball_pos.x - BALL_RADIUS < 0            { ball_pos.x = BALL_RADIUS;                ball_vel.x =  abs(ball_vel.x) }
+		if ball_pos.x + BALL_RADIUS > WINDOW_WIDTH { ball_pos.x = WINDOW_WIDTH - BALL_RADIUS; ball_vel.x = -abs(ball_vel.x) }
+		if ball_pos.y - BALL_RADIUS < 0            { ball_pos.y = BALL_RADIUS;                ball_vel.y =  abs(ball_vel.y) }
+		if ball_pos.y - BALL_RADIUS > WINDOW_HEIGHT {
+			state.lives -= 1
+			lives_dirty = true
+			if state.lives <= 0 {
+				running = false
+			} else {
+				ball_pos = {paddle_pos.x, paddle_pos.y - PADDLE_SIZE.y/2 - BALL_RADIUS - 5}
+				ball_vel = {BALL_SPEED.x, -abs(BALL_SPEED.y)}
+			}
+		}
+
+		} // end !paused
 
 		GL.ClearColor(0, 0, 0, 1)
 		GL.Clear(GL.COLOR_BUFFER_BIT)
@@ -455,7 +529,7 @@ main :: proc() {
 		// Rebuild and draw score
 		if score_dirty {
 			score_buf: [32]u8
-			score_str := fmt.bprintf(score_buf[:], "Score: %d", score)
+			score_str := fmt.bprintf(score_buf[:], "Score: %d", state.score)
 			score_w   := f32(ef.width(score_str)) * TEXT_SCALE
 			score_pos := vec2{f32(WINDOW_WIDTH) - score_w - 10, 10}
 			score_vert_count = quads_to_vbo(score_vbo, score_str, score_pos, TEXT_SCALE, GL.DYNAMIC_DRAW)
@@ -463,6 +537,27 @@ main :: proc() {
 		}
 		GL.BindVertexArray(score_vao)
 		GL.DrawArrays(GL.TRIANGLES, 0, i32(score_vert_count))
+
+		// Rebuild and draw lives
+		if lives_dirty {
+			lives_buf: [32]u8
+			lives_str := fmt.bprintf(lives_buf[:], "Lives: %d", state.lives)
+			lives_vert_count = quads_to_vbo(lives_vbo, lives_str, {10, 10}, TEXT_SCALE, GL.DYNAMIC_DRAW)
+			lives_dirty = false
+		}
+		GL.BindVertexArray(lives_vao)
+		GL.DrawArrays(GL.TRIANGLES, 0, i32(lives_vert_count))
+
+		// Draw dim overlay and paused text
+		if paused {
+			GL.Uniform2f(loc_center, 0, 0)
+			GL.Uniform4f(loc_color, 0, 0, 0, 0.6)
+			GL.BindVertexArray(dim_vao)
+			GL.DrawArrays(GL.TRIANGLE_STRIP, 0, 4)
+			GL.Uniform4f(loc_color, 1, 1, 1, 1)
+			GL.BindVertexArray(paused_vao)
+			GL.DrawArrays(GL.TRIANGLES, 0, i32(paused_vert_count))
+		}
 
 		if should_screenshot {
 			take_screenshot(&screenshot_counter)

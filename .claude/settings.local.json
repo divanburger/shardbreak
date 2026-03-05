@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(grep:*)",
+      "Bash(/home/divan/git/odin/odin build:*)",
+      "Bash(./main:*)",
+      "Bash(git:*)"
+    ]
+  }
+}
