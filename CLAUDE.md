@@ -6,13 +6,13 @@ A game built from scratch in Odin using SDL3 and OpenGL.
 
 ```sh
 # Run directly
-/home/divan/git/odin/odin run main.odin -file
+/home/divan/git/odin/odin run .
 
 # Build binary
-/home/divan/git/odin/odin build main.odin -file -out:main
+/home/divan/git/odin/odin build . -out:main
 
 # Optimized build
-/home/divan/git/odin/odin build main.odin -file -o:speed -out:main
+/home/divan/git/odin/odin build . -o:speed -out:main
 ```
 
 ## Debugging
@@ -20,7 +20,7 @@ A game built from scratch in Odin using SDL3 and OpenGL.
 To debug visual output, build the binary and use the screenshot flags to capture the game state at a specific time, then read the image:
 
 ```sh
-/home/divan/git/odin/odin build main.odin -file -out:main
+/home/divan/git/odin/odin build . -out:main
 ./main --screenshot-at 1.0 --quit-after-screenshot
 ```
 
@@ -41,6 +41,34 @@ Screenshots are saved to `screenshots/` and can be read directly with the Read t
 | stb_image_write | `import stbi "vendor:stb/image"` | `/home/divan/git/odin/vendor/stb/image/stb_image_write.odin` |
 
 `glsl.vec2 :: [2]f32` — Odin's array programming operators work element-wise on it (`+`, `-`, `*`, `/` with scalars and vectors). Field accessors `.x` / `.y` work.
+
+## Math Utilities (`math.odin`)
+
+Type aliases (use these everywhere — do not write `glsl.vec2` or `glsl.ivec2` directly):
+
+| Alias | Underlying type | Use for |
+|-------|----------------|---------|
+| `vec2` | `glsl.vec2` (`[2]f32`) | float positions and sizes |
+| `ivec2` | `glsl.ivec2` (`[2]i32`) | integer positions and sizes (e.g. pixel dimensions) |
+
+### Rect
+
+```odin
+Rect :: struct { min, max: vec2 }
+```
+
+Represents an axis-aligned rectangle by its top-left (`min`) and bottom-right (`max`) corners.
+
+### Helpers
+
+- `point_inside_rect(point: vec2, r: Rect) -> bool` — inclusive bounds check
+- `clamp2(v, lo, hi: $T/[2]$E) -> T` — element-wise clamp for `vec2` or `ivec2`; uses polymorphic array type so it works for both without explicit overloads
+
+### Conventions
+
+- Always use `vec2`/`ivec2` for positions and sizes — never separate `x, y` or `w, h` scalar variables
+- Use `ivec2` when values are integers (e.g. `WINDOW_SIZE :: ivec2{800, 600}`), `vec2` when float
+- Pass values directly — never reconstruct from components (e.g. pass `pos` not `vec2{pos.x, pos.y}`, pass `r` not `Rect{r.min, r.max}`)
 
 ## SDL3 + OpenGL Initialization Order
 
