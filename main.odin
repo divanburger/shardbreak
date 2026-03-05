@@ -21,6 +21,14 @@ PADDLE_HEIGHT  :: 15.0
 PADDLE_SPEED   :: 500.0
 PADDLE_Y       :: f32(WINDOW_HEIGHT) - 60.0
 
+BLOCK_COLS   :: 20
+BLOCK_ROWS   :: 5
+BLOCK_W      :: 36.0
+BLOCK_H      :: 14.0
+BLOCK_GAP_X  :: 3.0
+BLOCK_GAP_Y  :: 5.0
+BLOCK_AREA_Y :: 40.0
+
 VERT_SRC :: `#version 330 core
 layout(location = 0) in vec2 a_offset;
 uniform vec2 u_center;
@@ -47,6 +55,38 @@ generate_circle_offsets :: proc() -> [VERTEX_COUNT]glsl.vec2 {
 	}
 	v[SEGMENTS+1] = v[1]
 	return v
+}
+
+block_rect :: proc(col, row: int) -> (l, t, r, b: f32) {
+	area_x :: (f32(WINDOW_WIDTH) - (BLOCK_COLS * (BLOCK_W + BLOCK_GAP_X) - BLOCK_GAP_X)) / 2
+	l = area_x + f32(col) * (BLOCK_W + BLOCK_GAP_X)
+	t = BLOCK_AREA_Y + f32(row) * (BLOCK_H + BLOCK_GAP_Y)
+	r = l + BLOCK_W
+	b = t + BLOCK_H
+	return
+}
+
+rebuild_block_vbo :: proc(vbo: u32, blocks: ^[BLOCK_COLS * BLOCK_ROWS]bool) -> int {
+	verts: [BLOCK_COLS * BLOCK_ROWS * 6]glsl.vec2
+	count := 0
+	for row in 0..<BLOCK_ROWS {
+		for col in 0..<BLOCK_COLS {
+			if !blocks[row * BLOCK_COLS + col] { continue }
+			l, t, r, b := block_rect(col, row)
+			verts[count+0] = {l, t}
+			verts[count+1] = {r, t}
+			verts[count+2] = {l, b}
+			verts[count+3] = {r, t}
+			verts[count+4] = {l, b}
+			verts[count+5] = {r, b}
+			count += 6
+		}
+	}
+	GL.BindBuffer(GL.ARRAY_BUFFER, vbo)
+	if count > 0 {
+		GL.BufferSubData(GL.ARRAY_BUFFER, 0, count * size_of(glsl.vec2), &verts)
+	}
+	return count
 }
 
 compile_shader_program :: proc(vert_src, frag_src: string) -> (program: u32, ok: bool) {
@@ -192,6 +232,19 @@ main :: proc() {
 	GL.EnableVertexAttribArray(0)
 	GL.BindVertexArray(0)
 
+	block_vao, block_vbo: u32
+	GL.GenVertexArrays(1, &block_vao)
+	GL.GenBuffers(1, &block_vbo)
+	defer GL.DeleteVertexArrays(1, &block_vao)
+	defer GL.DeleteBuffers(1, &block_vbo)
+
+	GL.BindVertexArray(block_vao)
+	GL.BindBuffer(GL.ARRAY_BUFFER, block_vbo)
+	GL.BufferData(GL.ARRAY_BUFFER, BLOCK_COLS * BLOCK_ROWS * 6 * size_of(glsl.vec2), nil, GL.DYNAMIC_DRAW)
+	GL.VertexAttribPointer(0, 2, GL.FLOAT, false, size_of(glsl.vec2), 0)
+	GL.EnableVertexAttribArray(0)
+	GL.BindVertexArray(0)
+
 	GL.UseProgram(program)
 	loc_center     := GL.GetUniformLocation(program, "u_center")
 	loc_resolution := GL.GetUniformLocation(program, "u_resolution")
@@ -201,6 +254,10 @@ main :: proc() {
 	ball_vel  := BALL_SPEED
 	paddle_x  := f32(WINDOW_WIDTH) / 2.0
 	left_held, right_held := false, false
+
+	blocks: [BLOCK_COLS * BLOCK_ROWS]bool
+	for &b in blocks { b = true }
+	block_vert_count := rebuild_block_vbo(block_vbo, &blocks)
 
 	prev_counter := SDL.GetPerformanceCounter()
 	freq         := SDL.GetPerformanceFrequency()
@@ -251,6 +308,29 @@ main :: proc() {
 
 		ball_pos += ball_vel * dt
 
+		// Block collision
+		block_loop: for row in 0..<BLOCK_ROWS {
+			for col in 0..<BLOCK_COLS {
+				idx := row * BLOCK_COLS + col
+				if !blocks[idx] { continue }
+				l, t, r, b := block_rect(col, row)
+				cx := clamp(ball_pos.x, l, r)
+				cy := clamp(ball_pos.y, t, b)
+				dx := ball_pos.x - cx
+				dy := ball_pos.y - cy
+				if dx*dx + dy*dy < BALL_RADIUS * BALL_RADIUS {
+					blocks[idx] = false
+					block_vert_count = rebuild_block_vbo(block_vbo, &blocks)
+					if ball_pos.x >= l && ball_pos.x <= r {
+						ball_vel.y = -ball_vel.y
+					} else {
+						ball_vel.x = -ball_vel.x
+					}
+					break block_loop
+				}
+			}
+		}
+
 		// Paddle collision: ball bottom hits paddle top
 		paddle_top := PADDLE_Y - PADDLE_HEIGHT / 2
 		if ball_vel.y > 0 &&
@@ -288,6 +368,12 @@ main :: proc() {
 		GL.Uniform2f(loc_center, 0, 0)
 		GL.BindVertexArray(paddle_vao)
 		GL.DrawArrays(GL.TRIANGLE_STRIP, 0, 4)
+
+		// Draw blocks
+		if block_vert_count > 0 {
+			GL.BindVertexArray(block_vao)
+			GL.DrawArrays(GL.TRIANGLES, 0, i32(block_vert_count))
+		}
 
 		if should_screenshot {
 			take_screenshot(&screenshot_counter)
