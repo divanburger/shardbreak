@@ -7,7 +7,7 @@ import SDL "vendor:sdl3"
 import GL "vendor:OpenGL"
 import ef "vendor:stb/easy_font"
 
-WINDOW_TITLE   :: "Bouncing Ball"
+WINDOW_TITLE   :: "Shardbreak"
 WINDOW_WIDTH   :: 800
 WINDOW_HEIGHT  :: 600
 WINDOW_SIZE    :: ivec2{WINDOW_WIDTH, WINDOW_HEIGHT}
@@ -26,9 +26,11 @@ BLOCK_SIZE   :: vec2{36.0, 14.0}
 BLOCK_GAP    :: vec2{3.0, 5.0}
 BLOCK_AREA_Y :: 40.0
 
-GAME_NAME      :: "gai"
+GAME_NAME      :: "Shardbreak"
 TEXT_SCALE     :: f32(3)
 STARTING_LIVES :: 3
+
+GameScreen :: enum { MainMenu, Playing }
 
 block_rect :: proc(col, row: int) -> Rect {
 	area_x := (f32(WINDOW_WIDTH) - (BLOCK_COLS * (BLOCK_SIZE.x + BLOCK_GAP.x) - BLOCK_GAP.x)) / 2
@@ -48,6 +50,8 @@ update :: proc(
 	prev_counter:       ^u64,
 	freq:                u64,
 	running:            ^bool,
+	screen:             ^GameScreen,
+	menu_selected:      ^int,
 	waiting_to_start:   ^bool,
 	paused:             ^bool,
 	opts:               ^Options,
@@ -69,7 +73,19 @@ update :: proc(
 		case .QUIT, .WINDOW_CLOSE_REQUESTED:
 			running^ = false
 		case .KEY_DOWN:
-			if waiting_to_start^ {
+			if screen^ == .MainMenu {
+				menu_items := []string{"Start game", "Quit"}
+				#partial switch event.key.scancode {
+				case .UP:   menu_selected^ = (menu_selected^ - 1 + len(menu_items)) % len(menu_items)
+				case .DOWN: menu_selected^ = (menu_selected^ + 1) % len(menu_items)
+				case .RETURN, .KP_ENTER:
+					switch menu_selected^ {
+					case 0: screen^ = .Playing; waiting_to_start^ = true
+					case 1: running^ = false
+					}
+				case .ESCAPE: running^ = false
+				}
+			} else if waiting_to_start^ {
 				#partial switch event.key.scancode {
 				case .ESCAPE: running^ = false
 				case:         waiting_to_start^ = false
@@ -101,7 +117,7 @@ update :: proc(
 		}
 	}
 
-	if !paused^ && !waiting_to_start^ {
+	if screen^ == .Playing && !paused^ && !waiting_to_start^ {
 		if left_held^  { state.paddle.pos.x -= PADDLE_SPEED * dt }
 		if right_held^ { state.paddle.pos.x += PADDLE_SPEED * dt }
 		state.paddle.pos.x = clamp(state.paddle.pos.x, PADDLE_SIZE.x / 2, f32(WINDOW_WIDTH) - PADDLE_SIZE.x / 2)
@@ -155,37 +171,52 @@ update :: proc(
 	title_pos := vec2{(f32(WINDOW_WIDTH) - text_w) / 2, 10}
 	draw_text(r, GAME_NAME, title_pos, TEXT_SCALE, WHITE)
 
-	score_str := fmt.tprintf("Score: %d", state.score)
-	score_w   := f32(ef.width(score_str)) * TEXT_SCALE
-	score_pos := vec2{f32(WINDOW_WIDTH) - score_w - 10, 10}
-	draw_text(r, score_str, score_pos, TEXT_SCALE, WHITE)
+	if screen^ == .MainMenu {
+		menu_items := []string{"Start game", "Quit"}
+		item_h     := f32(8) * TEXT_SCALE
+		spacing    := f32(30)
+		block_h    := f32(len(menu_items)) * item_h + f32(len(menu_items) - 1) * spacing
+		start_y    := (f32(WINDOW_HEIGHT) - block_h) / 2
+		for item, i in menu_items {
+			color  := WHITE if i != menu_selected^ else YELLOW
+			item_w := f32(ef.width(item)) * TEXT_SCALE
+			item_x := (f32(WINDOW_WIDTH) - item_w) / 2
+			item_y := start_y + f32(i) * (item_h + spacing)
+			draw_text(r, item, vec2{item_x, item_y}, TEXT_SCALE, color)
+		}
+	} else {
+		score_str := fmt.tprintf("Score: %d", state.score)
+		score_w   := f32(ef.width(score_str)) * TEXT_SCALE
+		score_pos := vec2{f32(WINDOW_WIDTH) - score_w - 10, 10}
+		draw_text(r, score_str, score_pos, TEXT_SCALE, WHITE)
 
-	draw_text(r, fmt.tprintf("Lives: %d", state.lives), {10, 10}, TEXT_SCALE, WHITE)
+		draw_text(r, fmt.tprintf("Lives: %d", state.lives), {10, 10}, TEXT_SCALE, WHITE)
 
-	draw_circle(r, state.ball.circle, WHITE)
+		draw_circle(r, state.ball.circle, WHITE)
 
-	half := PADDLE_SIZE / 2
-	draw_rect(r, Rect{min = state.paddle.pos - half, max = state.paddle.pos + half}, WHITE)
+		half := PADDLE_SIZE / 2
+		draw_rect(r, Rect{min = state.paddle.pos - half, max = state.paddle.pos + half}, WHITE)
 
-	for row in 0..<BLOCK_ROWS {
-		for col in 0..<BLOCK_COLS {
-			if state.blocks[row * BLOCK_COLS + col] {
-				draw_rect(r, block_rect(col, row), WHITE)
+		for row in 0..<BLOCK_ROWS {
+			for col in 0..<BLOCK_COLS {
+				if state.blocks[row * BLOCK_COLS + col] {
+					draw_rect(r, block_rect(col, row), WHITE)
+				}
 			}
 		}
-	}
 
-	if waiting_to_start^ {
-		msg   := "Press any key to start"
-		msg_w := f32(ef.width(msg)) * TEXT_SCALE
-		msg_pos := vec2{(f32(WINDOW_WIDTH) - msg_w) / 2, (f32(WINDOW_HEIGHT) - 8 * TEXT_SCALE) / 2}
-		draw_text(r, msg, msg_pos, TEXT_SCALE, WHITE)
-	} else if paused^ {
-		draw_rect(r, Rect{min = {0, 0}, max = {WINDOW_WIDTH, WINDOW_HEIGHT}}, Color{0, 0, 0, 0.6})
-		paused_text := "PAUSED"
-		paused_w    := f32(ef.width(paused_text)) * TEXT_SCALE
-		paused_pos  := vec2{(f32(WINDOW_WIDTH) - paused_w) / 2, (f32(WINDOW_HEIGHT) - 8 * TEXT_SCALE) / 2}
-		draw_text(r, paused_text, paused_pos, TEXT_SCALE, WHITE)
+		if waiting_to_start^ {
+			msg     := "Press any key to start"
+			msg_w   := f32(ef.width(msg)) * TEXT_SCALE
+			msg_pos := vec2{(f32(WINDOW_WIDTH) - msg_w) / 2, (f32(WINDOW_HEIGHT) - 8 * TEXT_SCALE) / 2}
+			draw_text(r, msg, msg_pos, TEXT_SCALE, WHITE)
+		} else if paused^ {
+			draw_rect(r, Rect{min = {0, 0}, max = {WINDOW_WIDTH, WINDOW_HEIGHT}}, Color{0, 0, 0, 0.6})
+			paused_text := "PAUSED"
+			paused_w    := f32(ef.width(paused_text)) * TEXT_SCALE
+			paused_pos  := vec2{(f32(WINDOW_WIDTH) - paused_w) / 2, (f32(WINDOW_HEIGHT) - 8 * TEXT_SCALE) / 2}
+			draw_text(r, paused_text, paused_pos, TEXT_SCALE, WHITE)
+		}
 	}
 }
 
@@ -242,7 +273,9 @@ main :: proc() {
 	}
 	for &b in state.blocks { b = true }
 
-	waiting_to_start   := true
+	screen             := GameScreen.MainMenu
+	menu_selected      := 0
+	waiting_to_start   := false
 	paused             := false
 	prev_counter       := SDL.GetPerformanceCounter()
 	freq               := SDL.GetPerformanceFrequency()
@@ -256,7 +289,7 @@ main :: proc() {
 		renderer_start_frame(&r)
 		update(
 			&prev_counter, freq,
-			&running, &waiting_to_start, &paused,
+			&running, &screen, &menu_selected, &waiting_to_start, &paused,
 			&opts,
 			&left_held, &right_held,
 			&state,
