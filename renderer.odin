@@ -23,12 +23,13 @@ void main() {
     frag_color = u_color;
 }`
 
-BLACK  :: Color{0, 0, 0, 1}
-WHITE  :: Color{1, 1, 1, 1}
-RED    :: Color{1, 0, 0, 1}
-GREEN  :: Color{0, 1, 0, 1}
-BLUE   :: Color{0, 0, 1, 1}
-YELLOW :: Color{1, 1, 0, 1}
+BLACK  :: Color{0,   0,   0,   1}
+WHITE  :: Color{1,   1,   1,   1}
+GREY   :: Color{0.4, 0.4, 0.4, 1}
+RED    :: Color{1,   0,   0,   1}
+GREEN  :: Color{0,   1,   0,   1}
+BLUE   :: Color{0,   0,   1,   1}
+YELLOW :: Color{1,   1,   0,   1}
 
 DrawCall :: struct {
 	prim_type:  u32,
@@ -41,14 +42,15 @@ MAX_VERTS     :: 8192
 MAX_DRAWCALLS :: 256
 
 Renderer :: struct {
-	program:    u32,
-	loc_color:  i32,
-	vao:        u32,
-	vbo:        u32,
-	verts:      [MAX_VERTS]vec2,
-	vert_count: int,
-	calls:      [MAX_DRAWCALLS]DrawCall,
-	call_count: int,
+	program:     u32,
+	loc_color:   i32,
+	vao:         u32,
+	vbo:         u32,
+	verts:       [MAX_VERTS]vec2,
+	vert_count:  int,
+	calls:       [MAX_DRAWCALLS]DrawCall,
+	call_count:  int,
+	window_size: ivec2,
 }
 
 compile_shader_program :: proc(vert_src, frag_src: string) -> (program: u32, ok: bool) {
@@ -98,18 +100,16 @@ compile_shader_program :: proc(vert_src, frag_src: string) -> (program: u32, ok:
 	return program, true
 }
 
-take_screenshot :: proc(counter: ^int) {
-	pixels := make([]u8, WINDOW_SIZE.x * WINDOW_SIZE.y * 4)
+take_screenshot :: proc(elapsed: f32, window_size: ivec2) {
+	pixels := make([]u8, window_size.x * window_size.y * 4)
 	defer delete(pixels)
 
-	GL.ReadPixels(0, 0, WINDOW_SIZE.x, WINDOW_SIZE.y, GL.RGBA, GL.UNSIGNED_BYTE, raw_data(pixels))
-
-	counter^ += 1
+	GL.ReadPixels(0, 0, window_size.x, window_size.y, GL.RGBA, GL.UNSIGNED_BYTE, raw_data(pixels))
 
 	buf: [256]u8
-	filename := fmt.bprintf(buf[:], "screenshots/screenshot_%04d.png\x00", counter^)
+	filename := fmt.bprintf(buf[:], "screenshots/screenshot_%dms.png\x00", int(elapsed * 1000))
 
-	if stbi.write_png(cstring(raw_data(buf[:])), WINDOW_SIZE.x, WINDOW_SIZE.y, 4, raw_data(pixels), WINDOW_SIZE.x * 4) == 0 {
+	if stbi.write_png(cstring(raw_data(buf[:])), window_size.x, window_size.y, 4, raw_data(pixels), window_size.x * 4) == 0 {
 		fmt.eprintln("screenshot failed")
 	} else {
 		fmt.println("screenshot saved:", filename[:len(filename)-1])
@@ -138,7 +138,20 @@ renderer_init :: proc() -> (r: Renderer, ok: bool) {
 	GL.EnableVertexAttribArray(0)
 	GL.BindVertexArray(0)
 
+	r.window_size = WINDOW_SIZE
+	GL.Viewport(0, 0, WINDOW_SIZE.x, WINDOW_SIZE.y)
+
 	return r, true
+}
+
+renderer_set_window_size :: proc(r: ^Renderer, size: ivec2) {
+	r.window_size = size
+	scale := min(f32(size.x) / f32(WINDOW_WIDTH), f32(size.y) / f32(WINDOW_HEIGHT))
+	vp_w  := i32(f32(WINDOW_WIDTH)  * scale)
+	vp_h  := i32(f32(WINDOW_HEIGHT) * scale)
+	vp_x  := (size.x - vp_w) / 2
+	vp_y  := (size.y - vp_h) / 2
+	GL.Viewport(vp_x, vp_y, vp_w, vp_h)
 }
 
 renderer_destroy :: proc(r: ^Renderer) {
@@ -152,7 +165,7 @@ renderer_start_frame :: proc(r: ^Renderer) {
 	r.call_count = 0
 }
 
-renderer_end_frame :: proc(r: ^Renderer, screenshot_counter: ^int, should_screenshot: ^bool, window: ^SDL.Window) {
+renderer_end_frame :: proc(r: ^Renderer, elapsed: f32, should_screenshot: ^bool, window: ^SDL.Window) {
 	GL.ClearColor(0, 0, 0, 1)
 	GL.Clear(GL.COLOR_BUFFER_BIT)
 	GL.UseProgram(r.program)
@@ -170,7 +183,7 @@ renderer_end_frame :: proc(r: ^Renderer, screenshot_counter: ^int, should_screen
 	}
 
 	if should_screenshot^ {
-		take_screenshot(screenshot_counter)
+		take_screenshot(elapsed, r.window_size)
 		should_screenshot^ = false
 	}
 

@@ -1,0 +1,15 @@
+{
+  "events": [
+    {"at": 0.05, "key": "Return"},
+    {"at": 0.10, "key": "Space"},
+    {"at": 0.15, "key": "Left", "action": "down"},
+    {"at": 3.0,  "key": "Space"},
+    {"at": 6.0,  "key": "Space"},
+    {"at": 9.0,  "key": "Space"},
+    {"at": 12.0, "key": "Space"},
+    {"at": 15.0, "key": "Space"},
+    {"at": 18.0, "key": "Space"},
+    {"at": 22.0, "key": "screenshot"},
+    {"at": 23.0, "key": "quit"}
+  ]
+}

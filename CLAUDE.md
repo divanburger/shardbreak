@@ -98,12 +98,40 @@ GL.load_up_to(3, 3, SDL.gl_set_proc_address)
 
 | Flag | Type | Default | Description |
 |------|------|---------|-------------|
-| `--screenshot-at` | `f32` | `-1` (disabled) | Take a screenshot this many seconds after startup |
-| `--quit-after-screenshot` | `bool` | `false` | Quit the game after the timed screenshot is taken |
+| `--test-script` | `string` | `""` (disabled) | Path to a test script JSON file to replay |
 
 ```sh
-./main --screenshot-at 5.0 --quit-after-screenshot
+./main --test-script tests/options.json
 ```
+
+## Test Scripts
+
+Test scripts live in `tests/`. Each is a JSON array of timed key events injected via `SDL.PushEvent` at the start of each frame.
+
+```json
+[
+  {"at": 0.05, "key": "Down"},
+  {"at": 0.10, "key": "Return"},
+  {"at": 0.20, "key": "screenshot"}
+]
+```
+
+- `at` — seconds since start (`elapsed`)
+- `key` — SDL scancode name (`"Up"`, `"Down"`, `"Return"`, `"Escape"`, `"Space"`, `"Left"`, `"Right"`, etc.) or `"screenshot"` to trigger a screenshot
+- `action` — `"down"` (default) or `"up"`
+
+### Key behaviour per screen state
+
+- `waiting_to_start`: any KEY_DOWN dismisses — use `"Space"` (ignored in all other states)
+- `GameOver`: only `Return`/`Escape` dismisses — `Space` will NOT skip it accidentally
+- `MainMenu` / `Options`: only specific keys act (Up/Down/Return/Escape)
+
+### Test files
+
+| File | What it tests |
+|------|---------------|
+| `tests/options.json` | Navigate to Options screen |
+| `tests/game_over.json` | Lose all 3 lives, show Game Over screen |
 
 ## Screenshot (PrtScr)
 
