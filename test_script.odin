@@ -13,14 +13,16 @@ TestEvent :: struct {
 }
 
 TestScript :: struct {
-	settings: Maybe(Settings),
-	events:   []TestEvent,
-	next:     int,
+	settings:  Maybe(Settings),
+	level_idx: Maybe(int),
+	events:    []TestEvent,
+	next:      int,
 }
 
 TestScriptFile :: struct {
-	settings: Maybe(Settings),
-	events:   [dynamic]TestEvent,
+	settings:  Maybe(Settings),
+	level_idx: Maybe(int),
+	events:    [dynamic]TestEvent,
 }
 
 test_script_load :: proc(path: string) -> (script: TestScript, ok: bool) {
@@ -30,7 +32,7 @@ test_script_load :: proc(path: string) -> (script: TestScript, ok: bool) {
 	file: TestScriptFile
 	json.unmarshal(data, &file)
 	slice.sort_by(file.events[:], proc(a, b: TestEvent) -> bool { return a.at < b.at })
-	return TestScript{settings = file.settings, events = file.events[:]}, true
+	return TestScript{settings = file.settings, level_idx = file.level_idx, events = file.events[:]}, true
 }
 
 test_script_pump :: proc(s: ^TestScript, elapsed: f32, should_screenshot: ^bool, running: ^bool) {

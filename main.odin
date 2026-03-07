@@ -3,14 +3,16 @@ package main
 import "core:fmt"
 import "core:flags"
 import "core:os"
+import glsl "core:math/linalg/glsl"
 import SDL "vendor:sdl3"
 import GL "vendor:OpenGL"
 import ef "vendor:stb/easy_font"
 
 WINDOW_TITLE   :: "Shardbreak"
-WINDOW_WIDTH   :: 1280
-WINDOW_HEIGHT  :: 720
-WINDOW_SIZE    :: ivec2{WINDOW_WIDTH, WINDOW_HEIGHT}
+GAME_WIDTH     :: 1280
+GAME_HEIGHT    :: 720
+GAME_SIZE      :: vec2{GAME_WIDTH, GAME_HEIGHT}
+WINDOW_SIZE    :: ivec2{GAME_WIDTH, GAME_HEIGHT}
 BALL_RADIUS    :: 36.0
 BALL_SPEED     :: vec2{300.0, 216.0}
 SEGMENTS       :: 64
@@ -18,10 +20,10 @@ VERTEX_COUNT   :: SEGMENTS + 2
 
 PADDLE_SIZE  :: vec2{144.0, 18.0}
 PADDLE_SPEED :: 600.0
-PADDLE_Y     :: f32(WINDOW_HEIGHT) - 70.0
+PADDLE_Y     :: f32(GAME_HEIGHT) - 70.0
 
 BLOCK_COLS   :: 20
-BLOCK_ROWS   :: 5
+BLOCK_ROWS   :: 15
 BLOCK_SIZE   :: vec2{57.0, 17.0}
 BLOCK_GAP    :: vec2{5.0, 6.0}
 BLOCK_AREA_Y :: 50.0
@@ -30,11 +32,35 @@ GAME_NAME      :: "Shardbreak"
 TEXT_SCALE     :: f32(4)
 STARTING_LIVES :: 3
 
-GameScreen  :: enum { MainMenu, Options, Playing, GameOver }
-OptionsItem :: enum { DisplayMode, Resolution, Back }
+MenuItem    :: enum { StartGame, Options, Quit }
+MENU_LABELS :: [MenuItem]string{ .StartGame = "Start game", .Options = "Options", .Quit = "Quit" }
+
+GameScreen  :: enum { MainMenu, Options, Playing, LevelComplete, GameOver }
+
+OptionsItem   :: enum { DisplayMode, Resolution, Back }
+OPTION_LABELS :: [OptionsItem]string{ .DisplayMode = "Display Mode", .Resolution = "Resolution", .Back = "Back" }
+
+PauseItem    :: enum { Resume, Quit }
+PAUSE_LABELS :: [PauseItem]string{ .Resume = "Resume", .Quit = "Quit" }
+
+PlayingState :: enum { Active, WaitingToStart, Paused }
+
+GameState :: struct {
+	running:          bool,
+	screen:           GameScreen,
+	menu_selected:    MenuItem,
+	options_focused:  OptionsItem,
+	playing_state:    PlayingState,
+	pause_selected:   PauseItem,
+	left_held:        bool,
+	right_held:       bool,
+	should_screenshot: bool,
+	dt:               f32,
+	elapsed:          f32,
+}
 
 block_rect :: proc(col, row: int) -> Rect {
-	area_x := (f32(WINDOW_WIDTH) - (BLOCK_COLS * (BLOCK_SIZE.x + BLOCK_GAP.x) - BLOCK_GAP.x)) / 2
+	area_x := (GAME_SIZE.x - (BLOCK_COLS * (BLOCK_SIZE.x + BLOCK_GAP.x) - BLOCK_GAP.x)) / 2
 	bmin := vec2{
 		area_x + f32(col) * (BLOCK_SIZE.x + BLOCK_GAP.x),
 		BLOCK_AREA_Y + f32(row) * (BLOCK_SIZE.y + BLOCK_GAP.y),
@@ -66,232 +92,282 @@ Options :: struct {
 	test_script: string `usage:"Path to a test script JSON file to replay."`,
 }
 
-update :: proc(
-	prev_counter:       ^u64,
-	freq:                u64,
-	running:            ^bool,
-	screen:             ^GameScreen,
-	menu_selected:      ^int,
-	waiting_to_start:   ^bool,
-	paused:             ^bool,
-	opts:               ^Options,
-	left_held:          ^bool,
-	right_held:         ^bool,
-	state:              ^LevelState,
-	elapsed:            ^f32,
-	should_screenshot:  ^bool,
-	r:                  ^Renderer,
-	window:             ^SDL.Window,
-	settings:           ^Settings,
-	options_focused:    ^OptionsItem,
-) {
-	now := SDL.GetPerformanceCounter()
-	dt  := f32(now - prev_counter^) / f32(freq)
-	prev_counter^ = now
+handle_main_menu :: proc(event: SDL.Event, gs: ^GameState) {
+	#partial switch event.key.scancode {
+	case .UP:   gs.menu_selected = MenuItem((int(gs.menu_selected) - 1 + len(MenuItem)) % len(MenuItem))
+	case .DOWN: gs.menu_selected = MenuItem((int(gs.menu_selected) + 1) % len(MenuItem))
+	case .RETURN, .KP_ENTER:
+		switch gs.menu_selected {
+		case .StartGame: gs.screen = .Playing; gs.playing_state = .WaitingToStart
+		case .Options:   gs.screen = .Options; gs.options_focused = .DisplayMode
+		case .Quit:      gs.running = false
+		}
+	case .ESCAPE: gs.running = false
+	}
+}
 
-	event: SDL.Event
-	for SDL.PollEvent(&event) {
-		#partial switch event.type {
-		case .QUIT, .WINDOW_CLOSE_REQUESTED:
-			running^ = false
-		case .WINDOW_RESIZED:
-			renderer_set_window_size(r, {event.window.data1, event.window.data2})
-		case .KEY_DOWN:
-			if screen^ == .MainMenu {
-				menu_items := []string{"Start game", "Options", "Quit"}
-				#partial switch event.key.scancode {
-				case .UP:   menu_selected^ = (menu_selected^ - 1 + len(menu_items)) % len(menu_items)
-				case .DOWN: menu_selected^ = (menu_selected^ + 1) % len(menu_items)
-				case .RETURN, .KP_ENTER:
-					switch menu_selected^ {
-					case 0: screen^ = .Playing; waiting_to_start^ = true
-					case 1: screen^ = .Options; options_focused^ = .DisplayMode
-					case 2: running^ = false
-					}
-				case .ESCAPE: running^ = false
-				}
-			} else if screen^ == .Options {
-				#partial switch event.key.scancode {
-				case .ESCAPE:
-					screen^ = .MainMenu
-				case .UP:
-					options_focused^ = OptionsItem((int(options_focused^) - 1 + len(OptionsItem)) % len(OptionsItem))
-				case .DOWN:
-					options_focused^ = OptionsItem((int(options_focused^) + 1) % len(OptionsItem))
-				case .LEFT:
-					#partial switch options_focused^ {
-					case .DisplayMode:
-						settings.display_mode = DisplayMode((int(settings.display_mode) - 1 + len(DisplayMode)) % len(DisplayMode))
-					case .Resolution:
-						if settings.display_mode != .Fullscreen {
-							settings.resolution_idx = (settings.resolution_idx - 1 + len(RESOLUTIONS)) % len(RESOLUTIONS)
-						}
-					}
-					apply_display_settings(window, r, settings^)
-					settings_save(settings^)
-				case .RIGHT:
-					#partial switch options_focused^ {
-					case .DisplayMode:
-						settings.display_mode = DisplayMode((int(settings.display_mode) + 1) % len(DisplayMode))
-					case .Resolution:
-						if settings.display_mode != .Fullscreen {
-							settings.resolution_idx = (settings.resolution_idx + 1) % len(RESOLUTIONS)
-						}
-					}
-					apply_display_settings(window, r, settings^)
-					settings_save(settings^)
-				case .RETURN, .KP_ENTER:
-					if options_focused^ == .Back { screen^ = .MainMenu }
-				}
-			} else if screen^ == .GameOver {
-				#partial switch event.key.scancode {
-				case .RETURN, .KP_ENTER, .ESCAPE:
-					screen^ = .MainMenu
-					state^ = LevelState{
-						ball   = {circle = {pos = {WINDOW_WIDTH / 2.0, WINDOW_HEIGHT / 2.0}, radius = BALL_RADIUS}, vel = BALL_SPEED},
-						paddle = {pos = {f32(WINDOW_WIDTH) / 2.0, PADDLE_Y}},
-						lives  = STARTING_LIVES,
-					}
-					for &b in state.blocks { b = true }
-					waiting_to_start^ = false
-					paused^ = false
-				}
-			} else if waiting_to_start^ {
-				#partial switch event.key.scancode {
-				case .ESCAPE: running^ = false
-				case:         waiting_to_start^ = false
-				}
-			} else {
-				#partial switch event.key.scancode {
-				case .ESCAPE:      running^ = false
-				case .PAUSE, .P:   paused^ = !paused^
-				case .PRINTSCREEN: should_screenshot^ = true
-				case .LEFT:        left_held^  = true
-				case .RIGHT:       right_held^ = true
-				}
-			}
-		case .KEY_UP:
-			#partial switch event.key.scancode {
-			case .LEFT:  left_held^  = false
-			case .RIGHT: right_held^ = false
+handle_options :: proc(event: SDL.Event, gs: ^GameState, settings: ^Settings, window: ^SDL.Window, r: ^Renderer) {
+	#partial switch event.key.scancode {
+	case .ESCAPE:
+		gs.screen = .MainMenu
+	case .UP:
+		gs.options_focused = OptionsItem((int(gs.options_focused) - 1 + len(OptionsItem)) % len(OptionsItem))
+	case .DOWN:
+		gs.options_focused = OptionsItem((int(gs.options_focused) + 1) % len(OptionsItem))
+	case .LEFT:
+		#partial switch gs.options_focused {
+		case .DisplayMode:
+			settings.display_mode = DisplayMode((int(settings.display_mode) - 1 + len(DisplayMode)) % len(DisplayMode))
+		case .Resolution:
+			if settings.display_mode != .Fullscreen {
+				settings.resolution_idx = (settings.resolution_idx - 1 + len(RESOLUTIONS)) % len(RESOLUTIONS)
 			}
 		}
+		apply_display_settings(window, r, settings^)
+		settings_save(settings^)
+	case .RIGHT:
+		#partial switch gs.options_focused {
+		case .DisplayMode:
+			settings.display_mode = DisplayMode((int(settings.display_mode) + 1) % len(DisplayMode))
+		case .Resolution:
+			if settings.display_mode != .Fullscreen {
+				settings.resolution_idx = (settings.resolution_idx + 1) % len(RESOLUTIONS)
+			}
+		}
+		apply_display_settings(window, r, settings^)
+		settings_save(settings^)
+	case .RETURN, .KP_ENTER:
+		if gs.options_focused == .Back { gs.screen = .MainMenu }
+	}
+}
+
+handle_game_over :: proc(event: SDL.Event, gs: ^GameState, run: ^RunState, state: ^LevelState, levels: []Level) {
+	#partial switch event.key.scancode {
+	case .RETURN, .KP_ENTER, .ESCAPE:
+		gs.screen = .MainMenu
+		run_state_init(run, state, levels)
+		gs.playing_state = .Active
+	}
+}
+
+handle_level_complete :: proc(event: SDL.Event, gs: ^GameState, run: ^RunState, state: ^LevelState, levels: []Level) {
+	#partial switch event.key.scancode {
+	case .SPACE, .RETURN, .KP_ENTER:
+		run.level_idx += 1
+		if run.level_idx >= len(levels) {
+			gs.screen = .MainMenu
+			run_state_init(run, state, levels)
+		} else {
+			level_state_init(state, levels[run.level_idx])
+			gs.screen = .Playing
+			gs.playing_state = .WaitingToStart
+		}
+	case .ESCAPE:
+		gs.screen = .MainMenu
+		run_state_init(run, state, levels)
+	}
+}
+
+handle_waiting_to_start :: proc(event: SDL.Event, gs: ^GameState) {
+	#partial switch event.key.scancode {
+	case .ESCAPE: gs.running = false
+	case .SPACE:  gs.playing_state = .Active
+	}
+}
+
+handle_paused :: proc(event: SDL.Event, gs: ^GameState, run: ^RunState, state: ^LevelState, levels: []Level) {
+	#partial switch event.key.scancode {
+	case .ESCAPE, .PAUSE, .P: gs.playing_state = .Active
+	case .UP:   gs.pause_selected = PauseItem((int(gs.pause_selected) - 1 + len(PauseItem)) % len(PauseItem))
+	case .DOWN: gs.pause_selected = PauseItem((int(gs.pause_selected) + 1) % len(PauseItem))
+	case .RETURN, .KP_ENTER:
+		switch gs.pause_selected {
+		case .Resume:
+			gs.playing_state = .Active
+		case .Quit:
+			gs.screen = .MainMenu
+			run_state_init(run, state, levels)
+			gs.playing_state = .Active
+		}
+	}
+}
+
+handle_playing :: proc(event: SDL.Event, gs: ^GameState) {
+	#partial switch event.key.scancode {
+	case .ESCAPE, .PAUSE, .P: gs.playing_state = .Paused; gs.pause_selected = .Resume
+	case .PRINTSCREEN: gs.should_screenshot = true
+	case .LEFT:        gs.left_held  = true
+	case .RIGHT:       gs.right_held = true
+	}
+}
+
+handle_event :: proc(event: SDL.Event, gs: ^GameState, run: ^RunState, state: ^LevelState, levels: []Level, r: ^Renderer, window: ^SDL.Window, settings: ^Settings) {
+	#partial switch event.type {
+	case .QUIT, .WINDOW_CLOSE_REQUESTED:
+		gs.running = false
+	case .WINDOW_RESIZED:
+		renderer_set_window_size(r, {event.window.data1, event.window.data2})
+	case .KEY_DOWN:
+		switch gs.screen {
+		case .MainMenu:      handle_main_menu(event, gs)
+		case .Options:       handle_options(event, gs, settings, window, r)
+		case .GameOver:      handle_game_over(event, gs, run, state, levels)
+		case .LevelComplete: handle_level_complete(event, gs, run, state, levels)
+		case .Playing:
+			switch gs.playing_state {
+			case .WaitingToStart: handle_waiting_to_start(event, gs)
+			case .Paused:         handle_paused(event, gs, run, state, levels)
+			case .Active:         handle_playing(event, gs)
+			}
+		}
+	case .KEY_UP:
+		#partial switch event.key.scancode {
+		case .LEFT:  gs.left_held  = false
+		case .RIGHT: gs.right_held = false
+		}
+	}
+}
+
+update :: proc(
+	gs:       ^GameState,
+	opts:     ^Options,
+	run:      ^RunState,
+	state:    ^LevelState,
+	levels:   []Level,
+	r:        ^Renderer,
+	window:   ^SDL.Window,
+	settings: ^Settings,
+) {
+	event: SDL.Event
+	for SDL.PollEvent(&event) {
+		handle_event(event, gs, run, state, levels, r, window, settings)
 	}
 
-	elapsed^ += dt
+	if gs.screen == .Playing && gs.playing_state == .Active {
+		if gs.left_held  { state.paddle.pos.x -= PADDLE_SPEED * gs.dt }
+		if gs.right_held { state.paddle.pos.x += PADDLE_SPEED * gs.dt }
+		state.paddle.pos.x = clamp(state.paddle.pos.x, state.playing_area.min.x + PADDLE_SIZE.x / 2, state.playing_area.max.x - PADDLE_SIZE.x / 2)
 
-if screen^ == .Playing && !paused^ && !waiting_to_start^ {
-		if left_held^  { state.paddle.pos.x -= PADDLE_SPEED * dt }
-		if right_held^ { state.paddle.pos.x += PADDLE_SPEED * dt }
-		state.paddle.pos.x = clamp(state.paddle.pos.x, PADDLE_SIZE.x / 2, f32(WINDOW_WIDTH) - PADDLE_SIZE.x / 2)
-
-		state.ball.pos += state.ball.vel * dt
+		state.ball.pos += state.ball.vel * gs.dt
 
 		// Block collision
 		block_loop: for row in 0..<BLOCK_ROWS {
 			for col in 0..<BLOCK_COLS {
 				idx := row * BLOCK_COLS + col
-				if !state.blocks[idx] { continue }
+				if state.blocks[idx].lives <= 0 { continue }
 				rect := block_rect(col, row)
-				if rect_circle_dist(rect, state.ball.circle) <= 0 {
-					state.blocks[idx] = false
+				sep, normal := rect_circle_contact(rect, state.ball.circle)
+				if sep <= 0 {
+					state.blocks[idx].lives -= 1
 					state.score += 100
-					if state.ball.pos.x >= rect.min.x && state.ball.pos.x <= rect.max.x {
-						state.ball.vel.y = -state.ball.vel.y
-					} else {
-						state.ball.vel.x = -state.ball.vel.x
-					}
+					state.ball.pos -= sep * normal
+					state.ball.vel = glsl.reflect(state.ball.vel, normal)
 					break block_loop
 				}
 			}
 		}
 
-		// Paddle collision: ball bottom hits paddle top
+		// Level complete check
+		all_cleared := true
+		for b in state.blocks {
+			if b.lives > 0 { all_cleared = false; break }
+		}
+		if all_cleared { gs.screen = .LevelComplete }
+
+		// Paddle collision
 		half_paddle := PADDLE_SIZE / 2
 		paddle_rect := Rect{min = state.paddle.pos - half_paddle, max = state.paddle.pos + half_paddle}
-		if state.ball.vel.y > 0 && rect_circle_dist(paddle_rect, state.ball.circle) <= 0 {
-			state.ball.pos.y = paddle_rect.min.y - state.ball.radius
-			state.ball.vel.y = -abs(state.ball.vel.y)
+		sep, normal := rect_circle_contact(paddle_rect, state.ball.circle)
+		if sep <= 0 {
+			state.ball.pos -= sep * normal
+			if glsl.dot(state.ball.vel, normal) < 0 {
+				state.ball.vel = glsl.reflect(state.ball.vel, normal)
+			}
 		}
 
-		if state.ball.pos.x - state.ball.radius < 0            { state.ball.pos.x = state.ball.radius;                state.ball.vel.x =  abs(state.ball.vel.x) }
-		if state.ball.pos.x + state.ball.radius > WINDOW_WIDTH { state.ball.pos.x = WINDOW_WIDTH - state.ball.radius; state.ball.vel.x = -abs(state.ball.vel.x) }
-		if state.ball.pos.y - state.ball.radius < 0            { state.ball.pos.y = state.ball.radius;                state.ball.vel.y =  abs(state.ball.vel.y) }
-		if state.ball.pos.y - state.ball.radius > WINDOW_HEIGHT {
-			state.lives -= 1
-			if state.lives <= 0 {
-				screen^ = .GameOver
+		pa := state.playing_area
+		if state.ball.pos.x - state.ball.radius < pa.min.x { state.ball.pos.x = pa.min.x + state.ball.radius; state.ball.vel.x =  abs(state.ball.vel.x) }
+		if state.ball.pos.x + state.ball.radius > pa.max.x { state.ball.pos.x = pa.max.x - state.ball.radius; state.ball.vel.x = -abs(state.ball.vel.x) }
+		if state.ball.pos.y - state.ball.radius < pa.min.y { state.ball.pos.y = pa.min.y + state.ball.radius; state.ball.vel.y =  abs(state.ball.vel.y) }
+		if state.ball.pos.y - state.ball.radius > pa.max.y {
+			run.lives -= 1
+			if run.lives <= 0 {
+				gs.screen = .GameOver
 			} else {
 				state.ball.pos  = {state.paddle.pos.x, state.paddle.pos.y - PADDLE_SIZE.y/2 - state.ball.radius - 5}
 				state.ball.vel  = {BALL_SPEED.x, -abs(BALL_SPEED.y)}
-				waiting_to_start^ = true
+				gs.playing_state = .WaitingToStart
 			}
 		}
-	} // end !paused
+
+		// Keep velocity at constant speed; prevent near-horizontal travel
+		speed := glsl.length(BALL_SPEED)
+		min_vy := speed * 0.1
+		if abs(state.ball.vel.y) < min_vy {
+			state.ball.vel.y = min_vy if state.ball.vel.y > 0 else -min_vy
+		}
+		state.ball.vel = glsl.normalize(state.ball.vel) * speed
+	} // end playing_state == .Active
 
 	// Draw calls
-	text_w    := f32(ef.width(GAME_NAME)) * TEXT_SCALE
-	title_pos := vec2{(f32(WINDOW_WIDTH) - text_w) / 2, 10}
-	draw_text(r, GAME_NAME, title_pos, TEXT_SCALE, WHITE)
+	r.clear_color = DARK_GREY if gs.screen == .Playing else BLACK
 
-	if screen^ == .MainMenu {
-		menu_items := []string{"Start game", "Options", "Quit"}
-		item_h     := f32(8) * TEXT_SCALE
-		spacing    := f32(30)
-		block_h    := f32(len(menu_items)) * item_h + f32(len(menu_items) - 1) * spacing
-		start_y    := (f32(WINDOW_HEIGHT) - block_h) / 2
-		for item, i in menu_items {
-			color  := WHITE if i != menu_selected^ else YELLOW
-			item_w := f32(ef.width(item)) * TEXT_SCALE
-			item_x := (f32(WINDOW_WIDTH) - item_w) / 2
-			item_y := start_y + f32(i) * (item_h + spacing)
-			draw_text(r, item, vec2{item_x, item_y}, TEXT_SCALE, color)
+	if gs.screen != .Playing {
+		draw_text(r, GAME_NAME, {GAME_SIZE.x / 2, 10}, TEXT_SCALE, WHITE, .Center)
+	}
+
+	if gs.screen == .MainMenu {
+		menu_labels := MENU_LABELS
+		item_h  := f32(8) * TEXT_SCALE
+		spacing := f32(30)
+		block_h := f32(len(MenuItem)) * item_h + f32(len(MenuItem) - 1) * spacing
+		start_y := (GAME_SIZE.y - block_h) / 2
+		for item in MenuItem {
+			label  := menu_labels[item]
+			color  := YELLOW if item == gs.menu_selected else WHITE
+			item_y := start_y + f32(int(item)) * (item_h + spacing)
+			draw_text(r, label, {GAME_SIZE.x / 2, item_y}, TEXT_SCALE, color, .Center)
 		}
-	} else if screen^ == .Options {
-		opts_title := "OPTIONS"
-		opts_w     := f32(ef.width(opts_title)) * TEXT_SCALE
-		draw_text(r, opts_title, {(f32(WINDOW_WIDTH) - opts_w) / 2, 80}, TEXT_SCALE, WHITE)
+	} else if gs.screen == .Options {
+		draw_text(r, "OPTIONS", {GAME_SIZE.x / 2, 80}, TEXT_SCALE, WHITE, .Center)
 
 		resolutions := RESOLUTIONS
 		res         := resolutions[settings.resolution_idx]
-		labels  := [2]string{"Display Mode", "Resolution"}
 		values  := [2]string{display_mode_name(settings.display_mode), fmt.tprintf("%dx%d", res.x, res.y)}
 		item_h  := f32(8) * TEXT_SCALE
 		spacing := f32(30)
 		start_y := f32(150)
 
-		for i in 0..<2 {
-			item  := OptionsItem(i)
+		option_labels := OPTION_LABELS
+		for item in OptionsItem.DisplayMode..=OptionsItem.Resolution {
 			fullscreen_res := item == .Resolution && settings.display_mode == .Fullscreen
-			color := GREY if fullscreen_res else (YELLOW if item == options_focused^ else WHITE)
-			y     := start_y + f32(i) * (item_h + spacing)
-			draw_text(r, labels[i], {f32(WINDOW_WIDTH) * 0.18, y}, TEXT_SCALE, color)
-			draw_text(r, fmt.tprintf("< %s >", values[i]), {f32(WINDOW_WIDTH) * 0.52, y}, TEXT_SCALE, color)
+			color := GREY if fullscreen_res else (YELLOW if item == gs.options_focused else WHITE)
+			y     := start_y + f32(int(item)) * (item_h + spacing)
+			draw_text(r, option_labels[item], {GAME_SIZE.x * 0.18, y}, TEXT_SCALE, color, .Left)
+			draw_text(r, fmt.tprintf("< %s >", values[int(item)]), {GAME_SIZE.x * 0.52, y}, TEXT_SCALE, color, .Left)
 		}
 
-		back_color := YELLOW if options_focused^ == .Back else WHITE
+		back_color := YELLOW if gs.options_focused == .Back else WHITE
 		back_y     := start_y + 2 * (item_h + spacing)
-		back_w     := f32(ef.width("Back")) * TEXT_SCALE
-		draw_text(r, "Back", {(f32(WINDOW_WIDTH) - back_w) / 2, back_y}, TEXT_SCALE, back_color)
-	} else if screen^ == .GameOver {
-		gameover_text := "GAME OVER"
-		gameover_w    := f32(ef.width(gameover_text)) * TEXT_SCALE
-		draw_text(r, gameover_text, {(f32(WINDOW_WIDTH) - gameover_w) / 2, f32(WINDOW_HEIGHT) / 2 - 60}, TEXT_SCALE, WHITE)
+		draw_text(r, option_labels[.Back], {GAME_SIZE.x / 2, back_y}, TEXT_SCALE, back_color, .Center)
+	} else if gs.screen == .GameOver {
+		draw_text(r, "GAME OVER", {GAME_SIZE.x / 2, GAME_SIZE.y / 2 - 60}, TEXT_SCALE, WHITE, .Center)
 
 		score_str := fmt.tprintf("Score: %d", state.score)
-		score_w   := f32(ef.width(score_str)) * TEXT_SCALE
-		draw_text(r, score_str, {(f32(WINDOW_WIDTH) - score_w) / 2, f32(WINDOW_HEIGHT) / 2}, TEXT_SCALE, WHITE)
+		draw_text(r, score_str, GAME_SIZE / 2, TEXT_SCALE, WHITE, .Center)
 
-		hint_str := "Press Enter to return to menu"
-		hint_w   := f32(ef.width(hint_str)) * TEXT_SCALE
-		draw_text(r, hint_str, {(f32(WINDOW_WIDTH) - hint_w) / 2, f32(WINDOW_HEIGHT) / 2 + 60}, TEXT_SCALE, WHITE)
+		draw_text(r, "Press Enter to return to menu", {GAME_SIZE.x / 2, GAME_SIZE.y / 2 + 60}, TEXT_SCALE, WHITE, .Center)
+	} else if gs.screen == .LevelComplete {
+		draw_text(r, "LEVEL COMPLETE!", {GAME_SIZE.x / 2, GAME_SIZE.y / 2 - 30}, TEXT_SCALE, YELLOW, .Center)
+		draw_text(r, "Press Space to continue", {GAME_SIZE.x / 2, GAME_SIZE.y / 2 + 30}, TEXT_SCALE, WHITE, .Center)
 	} else {
-		score_str := fmt.tprintf("Score: %d", state.score)
-		score_w   := f32(ef.width(score_str)) * TEXT_SCALE
-		score_pos := vec2{f32(WINDOW_WIDTH) - score_w - 10, 10}
-		draw_text(r, score_str, score_pos, TEXT_SCALE, WHITE)
+		draw_rect(r, state.playing_area, BLACK)
 
-		draw_text(r, fmt.tprintf("Lives: %d", state.lives), {10, 10}, TEXT_SCALE, WHITE)
+		score_str := fmt.tprintf("Score: %d", state.score)
+		draw_text(r, score_str, {GAME_SIZE.x - 10, 10}, TEXT_SCALE, WHITE, .Right)
+
+		draw_text(r, fmt.tprintf("Lives: %d", run.lives), {10, 10}, TEXT_SCALE, WHITE, .Left)
+		draw_text(r, fmt.tprintf("Level: %d", run.level_idx + 1), {GAME_SIZE.x / 2, 10}, TEXT_SCALE, WHITE, .Center)
 
 		draw_circle(r, state.ball.circle, WHITE)
 
@@ -300,23 +376,29 @@ if screen^ == .Playing && !paused^ && !waiting_to_start^ {
 
 		for row in 0..<BLOCK_ROWS {
 			for col in 0..<BLOCK_COLS {
-				if state.blocks[row * BLOCK_COLS + col] {
-					draw_rect(r, block_rect(col, row), WHITE)
-				}
+				b := state.blocks[row * BLOCK_COLS + col]
+				if b.lives <= 0 { continue }
+				color := YELLOW if b.lives > 1 else WHITE
+				draw_rect(r, block_rect(col, row), color)
 			}
 		}
 
-		if waiting_to_start^ {
-			msg     := "Press any key to start"
-			msg_w   := f32(ef.width(msg)) * TEXT_SCALE
-			msg_pos := vec2{(f32(WINDOW_WIDTH) - msg_w) / 2, (f32(WINDOW_HEIGHT) - 8 * TEXT_SCALE) / 2}
-			draw_text(r, msg, msg_pos, TEXT_SCALE, WHITE)
-		} else if paused^ {
-			draw_rect(r, Rect{min = {0, 0}, max = {WINDOW_WIDTH, WINDOW_HEIGHT}}, Color{0, 0, 0, 0.6})
-			paused_text := "PAUSED"
-			paused_w    := f32(ef.width(paused_text)) * TEXT_SCALE
-			paused_pos  := vec2{(f32(WINDOW_WIDTH) - paused_w) / 2, (f32(WINDOW_HEIGHT) - 8 * TEXT_SCALE) / 2}
-			draw_text(r, paused_text, paused_pos, TEXT_SCALE, WHITE)
+		if gs.playing_state == .WaitingToStart {
+			draw_rect(r, Rect{min = {}, max = GAME_SIZE}, Color{0, 0, 0, 0.6})
+			draw_text(r, "Press space to start", {GAME_SIZE.x / 2, (GAME_SIZE.y - 8 * TEXT_SCALE) / 2}, TEXT_SCALE, WHITE, .Center)
+		} else if gs.playing_state == .Paused {
+			draw_rect(r, Rect{min = {}, max = GAME_SIZE}, Color{0, 0, 0, 0.6})
+			item_h  := f32(8) * TEXT_SCALE
+			spacing := f32(30)
+			block_h := item_h + f32(1 + len(PauseItem)) * (item_h + spacing)
+			start_y := (GAME_SIZE.y - block_h) / 2
+			draw_text(r, "PAUSED", {GAME_SIZE.x / 2, start_y}, TEXT_SCALE, WHITE, .Center)
+			pause_labels := PAUSE_LABELS
+			for item in PauseItem {
+				color  := YELLOW if item == gs.pause_selected else WHITE
+				item_y := start_y + f32(1 + int(item)) * (item_h + spacing)
+				draw_text(r, pause_labels[item], {GAME_SIZE.x / 2, item_y}, TEXT_SCALE, color, .Center)
+			}
 		}
 	}
 }
@@ -344,7 +426,7 @@ main :: proc() {
 	SDL.GL_SetAttribute(.CONTEXT_PROFILE_MASK, 1)
 	SDL.GL_SetAttribute(.DOUBLEBUFFER, 1)
 
-	window := SDL.CreateWindow(WINDOW_TITLE, WINDOW_WIDTH, WINDOW_HEIGHT, SDL.WindowFlags{.OPENGL})
+	window := SDL.CreateWindow(WINDOW_TITLE, GAME_WIDTH, GAME_HEIGHT, SDL.WindowFlags{.OPENGL})
 	if window == nil {
 		fmt.eprintln("CreateWindow failed:", SDL.GetError())
 		return
@@ -377,42 +459,38 @@ main :: proc() {
 
 	apply_display_settings(window, &r, settings)
 
-	left_held, right_held := false, false
+	levels, levels_ok := levels_load()
+	if !levels_ok { return }
+	defer delete(levels)
 
-	state := LevelState{
-		ball   = {circle = {pos = {WINDOW_WIDTH / 2.0, WINDOW_HEIGHT / 2.0}, radius = BALL_RADIUS}, vel = BALL_SPEED},
-		paddle = {pos = {f32(WINDOW_WIDTH) / 2.0, PADDLE_Y}},
-		lives  = STARTING_LIVES,
+	state: LevelState
+	run: RunState
+	run_state_init(&run, &state, levels)
+
+	if idx, ok := test_script.level_idx.?; ok && idx < len(levels) {
+		run.level_idx = idx
+		level_state_init(&state, levels[idx])
 	}
-	for &b in state.blocks { b = true }
 
-	screen             := GameScreen.MainMenu
-	menu_selected      := 0
-	waiting_to_start   := false
-	paused             := false
-	prev_counter      := SDL.GetPerformanceCounter()
-	freq              := SDL.GetPerformanceFrequency()
-	should_screenshot := false
-	elapsed            : f32
-	options_focused    := OptionsItem.DisplayMode
+	gs: GameState
+	gs.running        = true
+	gs.screen         = .MainMenu
+	gs.pause_selected = .Resume
+	gs.options_focused = .DisplayMode
 
-	running := true
-	for running {
+	prev_counter := SDL.GetPerformanceCounter()
+	freq         := SDL.GetPerformanceFrequency()
+
+	for gs.running {
+		now          := SDL.GetPerformanceCounter()
+		gs.dt         = f32(now - prev_counter) / f32(freq)
+		prev_counter  = now
+		gs.elapsed   += gs.dt
+
 		free_all(context.temp_allocator)
-		test_script_pump(&test_script, elapsed, &should_screenshot, &running)
+		test_script_pump(&test_script, gs.elapsed, &gs.should_screenshot, &gs.running)
 		renderer_start_frame(&r)
-		update(
-			&prev_counter, freq,
-			&running, &screen, &menu_selected, &waiting_to_start, &paused,
-			&opts,
-			&left_held, &right_held,
-			&state,
-			&elapsed,
-			&should_screenshot,
-			&r,
-			window,
-			&settings, &options_focused,
-		)
-		renderer_end_frame(&r, elapsed, &should_screenshot, window)
+		update(&gs, &opts, &run, &state, levels, &r, window, &settings)
+		renderer_end_frame(&r, gs.elapsed, &gs.should_screenshot, window)
 	}
 }

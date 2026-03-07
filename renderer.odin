@@ -23,9 +23,10 @@ void main() {
     frag_color = u_color;
 }`
 
-BLACK  :: Color{0,   0,   0,   1}
-WHITE  :: Color{1,   1,   1,   1}
-GREY   :: Color{0.4, 0.4, 0.4, 1}
+BLACK      :: Color{0,    0,    0,    1}
+WHITE      :: Color{1,    1,    1,    1}
+DARK_GREY  :: Color{0.12, 0.12, 0.12, 1}
+GREY       :: Color{0.4,  0.4,  0.4,  1}
 RED    :: Color{1,   0,   0,   1}
 GREEN  :: Color{0,   1,   0,   1}
 BLUE   :: Color{0,   0,   1,   1}
@@ -38,8 +39,8 @@ DrawCall :: struct {
 	color:      Color,
 }
 
-MAX_VERTS     :: 8192
-MAX_DRAWCALLS :: 256
+MAX_VERTS     :: 16384
+MAX_DRAWCALLS :: 1100
 
 Renderer :: struct {
 	program:     u32,
@@ -51,6 +52,7 @@ Renderer :: struct {
 	calls:       [MAX_DRAWCALLS]DrawCall,
 	call_count:  int,
 	window_size: ivec2,
+	clear_color: Color,
 }
 
 compile_shader_program :: proc(vert_src, frag_src: string) -> (program: u32, ok: bool) {
@@ -138,7 +140,8 @@ renderer_init :: proc() -> (r: Renderer, ok: bool) {
 	GL.EnableVertexAttribArray(0)
 	GL.BindVertexArray(0)
 
-	r.window_size = WINDOW_SIZE
+	r.window_size  = WINDOW_SIZE
+	r.clear_color  = BLACK
 	GL.Viewport(0, 0, WINDOW_SIZE.x, WINDOW_SIZE.y)
 
 	return r, true
@@ -146,9 +149,9 @@ renderer_init :: proc() -> (r: Renderer, ok: bool) {
 
 renderer_set_window_size :: proc(r: ^Renderer, size: ivec2) {
 	r.window_size = size
-	scale := min(f32(size.x) / f32(WINDOW_WIDTH), f32(size.y) / f32(WINDOW_HEIGHT))
-	vp_w  := i32(f32(WINDOW_WIDTH)  * scale)
-	vp_h  := i32(f32(WINDOW_HEIGHT) * scale)
+	scale := min(f32(size.x) / GAME_SIZE.x, f32(size.y) / GAME_SIZE.y)
+	vp_w  := i32(GAME_SIZE.x * scale)
+	vp_h  := i32(GAME_SIZE.y * scale)
 	vp_x  := (size.x - vp_w) / 2
 	vp_y  := (size.y - vp_h) / 2
 	GL.Viewport(vp_x, vp_y, vp_w, vp_h)
@@ -166,7 +169,8 @@ renderer_start_frame :: proc(r: ^Renderer) {
 }
 
 renderer_end_frame :: proc(r: ^Renderer, elapsed: f32, should_screenshot: ^bool, window: ^SDL.Window) {
-	GL.ClearColor(0, 0, 0, 1)
+	c := r.clear_color
+	GL.ClearColor(c[0], c[1], c[2], c[3])
 	GL.Clear(GL.COLOR_BUFFER_BIT)
 	GL.UseProgram(r.program)
 
@@ -218,18 +222,26 @@ draw_circle :: proc(r: ^Renderer, circle: Circle, color: Color) {
 	r.call_count += 1
 }
 
-draw_text :: proc(r: ^Renderer, text: string, pos: vec2, scale: f32, color: Color) {
+TextAlign :: enum { Left, Center, Right }
+
+draw_text :: proc(r: ^Renderer, text: string, pos: vec2, scale: f32, color: Color, align: TextAlign = .Left) {
+	x := pos.x
+	switch align {
+	case .Center: x -= f32(ef.width(text)) * scale / 2
+	case .Right:  x -= f32(ef.width(text)) * scale
+	case .Left:
+	}
 	start := i32(r.vert_count)
 	quads: [256]ef.Quad
-	num_quads := ef.print(pos.x, pos.y, text, {255, 255, 255, 255}, quads[:], scale)
+	num_quads := ef.print(x / scale, pos.y / scale, text, {255, 255, 255, 255}, quads[:], 1.0)
 	for i in 0..<num_quads {
 		q := quads[i]
-		r.verts[r.vert_count+0] = {q.tl.v[0], q.tl.v[1]}
-		r.verts[r.vert_count+1] = {q.tr.v[0], q.tr.v[1]}
-		r.verts[r.vert_count+2] = {q.bl.v[0], q.bl.v[1]}
-		r.verts[r.vert_count+3] = {q.tr.v[0], q.tr.v[1]}
-		r.verts[r.vert_count+4] = {q.br.v[0], q.br.v[1]}
-		r.verts[r.vert_count+5] = {q.bl.v[0], q.bl.v[1]}
+		r.verts[r.vert_count+0] = {q.tl.v[0] * scale, q.tl.v[1] * scale}
+		r.verts[r.vert_count+1] = {q.tr.v[0] * scale, q.tr.v[1] * scale}
+		r.verts[r.vert_count+2] = {q.bl.v[0] * scale, q.bl.v[1] * scale}
+		r.verts[r.vert_count+3] = {q.tr.v[0] * scale, q.tr.v[1] * scale}
+		r.verts[r.vert_count+4] = {q.br.v[0] * scale, q.br.v[1] * scale}
+		r.verts[r.vert_count+5] = {q.bl.v[0] * scale, q.bl.v[1] * scale}
 		r.vert_count += 6
 	}
 	count := i32(r.vert_count) - start
