@@ -1,13 +1,14 @@
-# gai
+# Shardbreak
 
 A breakout-style game built from scratch in [Odin](https://odin-lang.org/) using SDL3 and OpenGL.
 
 ## Gameplay
 
 - Move the paddle to keep the ball in play
-- Break all 100 blocks to clear the board
+- Break all blocks to clear the level and advance to the next
 - Each block destroyed scores 100 points
-- You have 3 lives — the ball falling off the bottom costs one
+- You have 3 lives — the ball falling off the bottom costs one, lives carry over between levels
+- Blocks with multiple lives must be hit more than once to destroy; they appear yellow
 
 ## Controls
 
@@ -27,10 +28,10 @@ Requires the [Odin compiler](https://odin-lang.org/docs/install/).
 odin run .
 
 # Build binary
-odin build . -out:gai
+odin build . -out:main
 
 # Optimized build
-odin build . -o:speed -out:gai
+odin build . -o:speed -out:main
 ```
 
 ## Dependencies
