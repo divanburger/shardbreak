@@ -102,14 +102,14 @@ compile_shader_program :: proc(vert_src, frag_src: string) -> (program: u32, ok:
 	return program, true
 }
 
-take_screenshot :: proc(elapsed: f32, window_size: ivec2) {
+take_screenshot :: proc(elapsed: f32, window_size: ivec2, dir: string) {
 	pixels := make([]u8, window_size.x * window_size.y * 4)
 	defer delete(pixels)
 
 	GL.ReadPixels(0, 0, window_size.x, window_size.y, GL.RGBA, GL.UNSIGNED_BYTE, raw_data(pixels))
 
 	buf: [256]u8
-	filename := fmt.bprintf(buf[:], "screenshots/screenshot_%dms.png\x00", int(elapsed * 1000))
+	filename := fmt.bprintf(buf[:], "%s/screenshot_%dms.png\x00", dir, int(elapsed * 1000))
 
 	if stbi.write_png(cstring(raw_data(buf[:])), window_size.x, window_size.y, 4, raw_data(pixels), window_size.x * 4) == 0 {
 		fmt.eprintln("screenshot failed")
@@ -168,7 +168,7 @@ renderer_start_frame :: proc(r: ^Renderer) {
 	r.call_count = 0
 }
 
-renderer_end_frame :: proc(r: ^Renderer, elapsed: f32, should_screenshot: ^bool, window: ^SDL.Window) {
+renderer_end_frame :: proc(r: ^Renderer, elapsed: f32, should_screenshot: ^bool, window: ^SDL.Window, screenshot_dir: string) {
 	c := r.clear_color
 	GL.ClearColor(c[0], c[1], c[2], c[3])
 	GL.Clear(GL.COLOR_BUFFER_BIT)
@@ -187,7 +187,7 @@ renderer_end_frame :: proc(r: ^Renderer, elapsed: f32, should_screenshot: ^bool,
 	}
 
 	if should_screenshot^ {
-		take_screenshot(elapsed, r.window_size)
+		take_screenshot(elapsed, r.window_size, screenshot_dir)
 		should_screenshot^ = false
 	}
 

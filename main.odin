@@ -3,6 +3,7 @@ package main
 import "core:fmt"
 import "core:flags"
 import "core:os"
+import fp "core:path/filepath"
 import glsl "core:math/linalg/glsl"
 import SDL "vendor:sdl3"
 import GL "vendor:OpenGL"
@@ -407,13 +408,18 @@ main :: proc() {
 	opts: Options
 	flags.parse_or_exit(&opts, os.args, .Unix)
 
-	if infos, err := os.read_directory_by_path("screenshots", 0, context.allocator); err == nil {
+	screenshot_dir := "screenshots"
+	if opts.test_script != "" {
+		screenshot_dir = fmt.aprintf("%s/%s", fp.dir(opts.test_script, context.temp_allocator), fp.stem(opts.test_script))
+	}
+
+	if infos, err := os.read_directory_by_path(screenshot_dir, 0, context.allocator); err == nil {
 		for fi in infos {
 			os.remove(fi.fullpath)
 		}
 		os.file_info_slice_delete(infos, context.allocator)
 	}
-	os.make_directory("screenshots")
+	os.make_directory(screenshot_dir)
 
 	if !SDL.Init(SDL.InitFlags{.VIDEO}) {
 		fmt.eprintln("SDL_Init failed:", SDL.GetError())
@@ -491,6 +497,6 @@ main :: proc() {
 		test_script_pump(&test_script, gs.elapsed, &gs.should_screenshot, &gs.running)
 		renderer_start_frame(&r)
 		update(&gs, &opts, &run, &state, levels, &r, window, &settings)
-		renderer_end_frame(&r, gs.elapsed, &gs.should_screenshot, window)
+		renderer_end_frame(&r, gs.elapsed, &gs.should_screenshot, window, screenshot_dir)
 	}
 }
