@@ -1,3 +1,11 @@
 main
 screenshots/
 tests/**/*.png
+tests/*/
+build/
+savegame.json
+settings.json
+.omc/
+.claude/agents/
+.claude/worktrees/
+.claude/settings.local.json

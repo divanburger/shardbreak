@@ -48,7 +48,9 @@ The player controls a paddle at the bottom of the screen to bounce balls upward 
 
 - Blocks have a lives count. Each hit reduces lives by 1.
 - When a block's lives reach 0, it is destroyed.
-- Each block hit scores 100 points.
+- Each ball tracks a hit streak counter that starts at 0 and increments with each block hit.
+- Block hit score = 100 + 10 × hit streak (first hit = 100, second = 110, third = 120, etc.).
+- The hit streak resets to 0 when the ball bounces off the paddle.
 - Only one block collision is processed per ball per simulation step.
 - Destroyed blocks may drop an item (25% chance).
 
